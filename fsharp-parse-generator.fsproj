@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <Watch Include="$(MSBuildProjectDirectory)/src/**/*.val" />
+    <Watch Include="$(MSBuildProjectDirectory)/generate-parse.fsx" />
+  </ItemGroup>
+  <ItemGroup>
+    <VALFile Include="src/**/*.val" />
+    <FSXFile Include="generate-parse.fsx" />
+  </ItemGroup>
+  <Target
+    Name="generate-parse"
+    BeforeTargets="BeforeBuild"
+    Inputs="@(VALFile);@(FSXFile)"
+    Outputs="$(MSBuildProjectDirectory)/out/parsers.fs"
+  >
+    <Exec Command="dotnet fsi generate-parse.fsx > out/generate-parse.out.txt" />
+  </Target>
+  <ItemGroup>
+    <Compile Include="out/parsers.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="4.7.2" />
+    <PackageReference Include="NodaTime" Version="3.0.3" />
+    <PackageReference Include="FParsec" Version="1.1.1" />
+    <PackageReference Include="FSharp.Data" Version="3.3.3" />
+  </ItemGroup>
+  <!--
+  <ItemGroup>
+    <Compile Include="src/provider.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../sdks/FSharp.TypeProviders.SDK/src/FSharp.TypeProviders.SDK.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="4.7.2" />
+  </ItemGroup>
+  -->
+</Project>

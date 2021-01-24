@@ -160,7 +160,7 @@ let generateParser (field:FieldDefinition) : string =
       ]
     | FKBool ->
       generateJsonMatch field [
-        "JsonValue.Bool","Ok x"
+        "JsonValue.Boolean","Ok x"
         "JsonValue.String",generateParserMatch field "System.Boolean.TryParse(x)" "true,result"
       ]
     | FKGuid ->

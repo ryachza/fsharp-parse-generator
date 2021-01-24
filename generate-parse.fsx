@@ -4,6 +4,12 @@
 
 open System.IO
 
+type FieldName  = FieldName  of string with member this.extract = match this with | FieldName x -> x
+type RecordName = RecordName of string with member this.extract = match this with | RecordName x -> x
+type ModuleName = ModuleName of string with member this.extract = match this with | ModuleName x -> x
+
+let emptyFieldName = FieldName ""
+
 // type StringFlag
 //   = SFAllowEmpty
 //   | SFAllowNull
@@ -23,12 +29,15 @@ type FieldKind
   | FKRecord of RecordDefinition
   | FKOption of FieldKind
   | FKArray of FieldKind
+
+  | FKDynamic
+  | FKValid of FieldKind
   and FieldDefinition = {
-    name:string
+    name:FieldName
     kind:FieldKind
   }
   and RecordDefinition = {
-    name:string
+    name:RecordName
     fields:FieldDefinition array
   }
   and ModuleDefinition = {
@@ -45,7 +54,7 @@ module Parse =
     stream:System.IO.Stream
     encoding:System.Text.Encoding
   }
-  type State = Map<string,RecordDefinition>
+  type State = Map<RecordName,RecordDefinition>
 
   let ws = skipMany (anyOf " \t")
   let ws1 = skipMany1 (anyOf " \t")
@@ -60,12 +69,14 @@ module Parse =
   }
 
   let private parseIdentifier = identifier (IdentifierOptions()) .>> ws
+  let private parseFieldName = parseIdentifier |>> FieldName
+  let private parseRecordName = parseIdentifier |>> RecordName
 
   let private lookupRecord target : Parser<RecordDefinition,State> = parse {
     let! state = getUserState
     match state.TryFind(target) with
     | Some x -> return x
-    | None -> return! fail (sprintf "unrecognized record - %s" target)
+    | None -> return! fail (sprintf "unrecognized record - %s" target.extract)
   }
 
   let private parseFieldKind = parse {
@@ -82,23 +93,29 @@ module Parse =
       
       stringReturn "string" FKString
 
-      pchar '%' >>. parseIdentifier >>= lookupRecord |>> FKRecord
+      stringReturn "dynamic" FKDynamic
+
+      pchar '%' >>. parseRecordName >>= lookupRecord |>> FKRecord
     ]
     do! ws
     let! (wrappers:(FieldKind -> FieldKind) list) =
-      sepBy (choice [stringReturn "option" FKOption;stringReturn "array" FKArray]) ws1
+      sepBy (choice [
+        stringReturn "valid" FKValid
+        stringReturn "option" FKOption
+        stringReturn "array" FKArray
+      ]) ws1
     return List.fold (fun agg wrapper -> wrapper agg) primitive wrappers
   }
 
   let private parseExpansion = parseLine <| parse {
     do! skipString "..."
-    let! target = parseIdentifier
+    let! target = parseRecordName
     let! record = lookupRecord target
     return record.fields
   }
 
   let private parseField = parseLine <| parse {
-    let! name = parseIdentifier
+    let! name = parseFieldName
     do! ws
     do! pchar ':' |>> ignore
     do! ws
@@ -107,7 +124,7 @@ module Parse =
   }
 
   let private parseRecord = parse {
-    let! name = parseLine (pchar '@' >>. parseIdentifier) <?> "type name (@name)"
+    let! name = parseLine (pchar '@' >>. parseRecordName) <?> "type name (@name)"
     let! fields = many1 (parseExpansion <|> parseField) <?> "at least one field (name:type)"
     let record = { name=name;fields=Array.concat fields }
     let! state = getUserState
@@ -137,11 +154,20 @@ let generateParserMatch ({ name=name }:FieldDefinition) (parse:string) (check:st
 let generateParser (field:FieldDefinition) : string =
   let rec inner ({ name=name;kind=kind } as field) =
     match kind with
+    | FKDynamic ->
+      sprintf
+        @"(match dynamics.%s x with | Ok x -> Ok x | Error _ -> Error [name,""dynamic""])"
+        name.extract
+    | FKValid x ->
+      sprintf
+        @"(match %s with | Ok x -> (match validates.%s x with | Ok x -> Ok x | Error _ -> Error [name,""valid""]) | Error x -> Error x)"
+        (inner { field with name=emptyFieldName;kind=x })
+        name.extract
     | FKOption FKString ->
       sprintf
         @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> None | JsonValue.String(x) -> Ok (Some x)) | _ -> Error [name,""type""]"
     | FKOption kind ->
-      sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name="";kind=kind })
+      sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name=emptyFieldName;kind=kind })
     | FKInstant ->
       generateJsonMatch field [
         "JsonValue.String",generateParserMatch field "NodaTime.Text.InstantPattern.General.Parse(x)" "NodaParseSuccess result"
@@ -188,15 +214,15 @@ let generateParser (field:FieldDefinition) : string =
     | FKArray kind ->
       sprintf
         @"(match x with | JsonValue.Array(values) -> Result.map List.toArray <| Seq.foldBack (fun x agg -> match x,agg with | Ok x,Ok xs -> Ok (x::xs) | Error es1,Error es2 -> Error (es1@es2) | Error es,Ok _ -> Error es | Ok _,Error es -> Error es) (Array.mapi (fun i x -> let name = sprintf ""%%s[%%d]"" name i in %s) values) (Ok []) | _ -> Error [name,""type""])"
-        (inner { field with name="";kind=kind })
+        (inner { field with name=emptyFieldName;kind=kind })
     | FKRecord record ->
       sprintf
         @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s.parseJson (Map.ofArray properties)) | _ -> Error [name,""type""])"
-        record.name
+        record.name.extract
   sprintf
     @"(let name = ""%s"" in match map.TryFind(""%s"") with | Some x -> %s | None -> Error [name,""missing""])"
-    field.name
-    field.name
+    field.name.extract
+    field.name.extract
     (inner field)
 let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
   let parse =
@@ -209,7 +235,7 @@ let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
     |> String.concat ","
   let construct =
     fields
-    |> Array.mapi (fun i { name=name } -> sprintf "%s=_%d" name i)
+    |> Array.mapi (fun i { name=name } -> sprintf "%s=_%d" name.extract i)
     |> String.concat ";"
     |> sprintf "Ok { %s }"
   let failure =
@@ -228,7 +254,7 @@ let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
     construct
     failure
     error
-let rec generateKind : FieldKind -> string = function
+let rec generateKind (name:FieldName) : FieldKind -> string = function
   | FKDate -> "NodaTime.LocalDate"
   | FKTime -> "NodaTime.LocalTime"
   | FKDateTime -> "NodaTime.LocalDateTime"
@@ -238,46 +264,84 @@ let rec generateKind : FieldKind -> string = function
   | FKFloat -> "decimal"
   | FKBool -> "bool"
   | FKString -> "string"
-  | FKRecord x -> x.name
-  | FKArray x -> sprintf "%s array" (generateKind x)
-  | FKOption x -> sprintf "%s option" (generateKind x)
+  | FKRecord x -> x.name.extract
+  | FKArray x -> sprintf "%s array" (generateKind name x)
+  | FKOption x -> sprintf "%s option" (generateKind name x)
+  | FKValid x -> generateKind name x
+  | FKDynamic -> sprintf "'%s" name.extract
+let generateDynamicsTypeParameters (rd:RecordDefinition) : string option =
+  match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
+  | [||] -> None
+  | xs   -> Some (sprintf "<%s>" (xs |> Array.map (fun (FieldName x) -> sprintf "'%s" x) |> String.concat ","))
+let generateDynamicsParameter (rd:RecordDefinition) : {| name:string;kind:string |} option =
+  match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
+  | [||] -> None
+  | xs   -> Some {| name="dynamics";kind=sprintf "{| %s |}" (xs |> Array.map (fun (FieldName x) -> sprintf "%s:DynamicParser<'%s>" x x) |> String.concat ";") |}
+let generateValidatesParameter (rd:RecordDefinition) : {| name:string;kind:string |} option =
+  match rd.fields |> Array.choose (function | { name=x;kind=FKValid y } -> Some (x,y) | _ -> None) with
+  | [||] -> None
+  | xs   -> Some {| name="validates";kind=sprintf "{| %s |}" (xs |> Array.map (fun (x,y) -> sprintf "%s:ValidateParser<%s>" x.extract (generateKind x y)) |> String.concat ";") |}
+let additionalParameters (rd:RecordDefinition) : {| name:string;kind:string |} array =
+  Array.choose id [|generateDynamicsParameter rd;generateValidatesParameter rd|]
+let parameterToString (p:{| name:string;kind:string |}) : string =
+  sprintf "(%s:%s)" p.name p.kind
+let generateTypeName (rd:RecordDefinition) : string =
+  sprintf "%s%s" (rd.name.extract) (Option.defaultValue "" (generateDynamicsTypeParameters rd))
 let generateField : FieldDefinition -> string = function
   | { name=name;kind=kind } ->
-    sprintf "%s:%s" name (generateKind kind)
+    sprintf "%s:%s" name.extract (generateKind name kind)
 let generateRecord : RecordDefinition -> string = function
   | { name=name;fields=fields } as x ->
+    let parameters = additionalParameters x
     sprintf @"
 type %s = {
   %s
 } with
   // TODO: handler structure errors and parse errors separately
-  static member parseJson (map:Map<string,JsonValue>) : Result<%s,(string*string) list> =
+  static member parseJson (map:Map<string,JsonValue>) %s : Result<%s,(string*string) list> =
     %s
-  static member parseJsonRaw (x:string) : Result<%s,(string * string) list> =
+  static member parseJsonRaw (x:string) %s : Result<%s,(string * string) list> =
     match JsonValue.TryParse(x) with
     | Some (JsonValue.Record(properties)) ->
-      %s.parseJson (Map.ofArray properties)
+      %s.parseJson (Map.ofArray properties) %s
     | Some _ -> Error [""_"",""type""]
     | None -> Error [""_"",""parse""]
-  static member parseJsonArray (x:JsonValue array) : Result<%s,((string*string) list) array> =
+  static member parseJsonArray (x:JsonValue array) %s : Result<%s array,((string*string) list) array> =
     // TODO: loop through calling `parseJson` on each, collecting all success or set of failures
     failwith ""parseJsonArray: not implemented""
-  static member parseJsonRawArray (x:string) : Result<%s,((string * string) list) array> =
+  static member parseJsonRawArray (x:string) %s : Result<%s array,((string * string) list) array> =
     match JsonValue.TryParse(x) with
     | Some (JsonValue.Array(values)) ->
-      %s.parseJsonArray values
+      %s.parseJsonArray values %s
     | Some _ -> Error [|[""_"",""type""]|]
     | None -> Error [|[""_"",""parse""]|]
 "
-      name
-      (String.concat "\n  " (Array.map generateField fields))
-      name
+      // type definition:
+      (generateTypeName x)
+      (fields |> Array.map generateField |> String.concat "\n  ")
+
+      // parseJson definition:
+      (parameters |> Array.map parameterToString |> String.concat " ")
+      (generateTypeName x)
       (generateParseJson x)
-      name
-      name
-      name
-      name
-      name
+
+      // parseJsonRaw definition:
+      (parameters |> Array.map parameterToString |> String.concat " ")
+      (generateTypeName x)
+      name.extract
+      (parameters |> Array.map (fun x -> x.name) |> String.concat " ")
+
+      // parseJsonArray definition:
+      (parameters |> Array.map parameterToString |> String.concat " ")
+      (generateTypeName x)
+      // name.extract
+      // (String.concat " " (Array.map (fun x -> x.name) parameters))
+
+      // parseJsonRawArray definition:
+      (parameters |> Array.map parameterToString |> String.concat " ")
+      (generateTypeName x)
+      name.extract
+      (parameters |> Array.map (fun x -> x.name) |> String.concat " ")
 
 let target = "out/parsers.fs"
 let generated () =
@@ -286,7 +350,9 @@ let generated () =
   seq {
     yield "module App.GeneratedParsers"
     yield "open FSharp.Data"
-    yield "let (|NodaParseSuccess|NodaParseFailure|) (x:NodaTime.Text.ParseResult<'a>) = match x.TryGetValue(Unchecked.defaultof<'a>) with | true,x -> NodaParseSuccess x | false,_ -> NodaParseFailure"
+    yield "type DynamicParser<'a> = JsonValue -> Result<'a,string> // Map<string,JsonValue> -> Result<'a,string>"
+    yield "type ValidateParser<'a> = 'a -> Result<'a,string>"
+    yield "let private (|NodaParseSuccess|NodaParseFailure|) (x:NodaTime.Text.ParseResult<'a>) = match x.TryGetValue(Unchecked.defaultof<'a>) with | true,x -> NodaParseSuccess x | false,_ -> NodaParseFailure"
     for file in valfiles do
       printfn "%A" file
       match Parse.parseFile { name=file;stream=File.OpenRead(file);encoding=System.Text.Encoding.UTF8 } with
@@ -294,7 +360,6 @@ let generated () =
         for record in records -> generateRecord record
       | FParsec.CharParsers.Failure (result,_,_) ->
         failwith result
-
   }
 try
   let sb = System.Text.StringBuilder()

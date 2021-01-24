@@ -292,7 +292,6 @@ let generated () =
       match Parse.parseFile { name=file;stream=File.OpenRead(file);encoding=System.Text.Encoding.UTF8 } with
       | FParsec.CharParsers.Success ({ records=records },_,_) ->
         for record in records -> generateRecord record
-        // yield "type Test = { one:int;two:NodaTime.LocalDateTime }"
       | FParsec.CharParsers.Failure (result,_,_) ->
         failwith result
 

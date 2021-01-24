@@ -141,7 +141,7 @@ let generateParser (field:FieldDefinition) : string =
       sprintf
         @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> None | JsonValue.String(x) -> Ok (Some x)) | _ -> Error [name,""type""]"
     | FKOption kind ->
-      sprintf @"Result.map Some %s" (inner { field with name="";kind=kind })
+      sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name="";kind=kind })
     | FKInstant ->
       generateJsonMatch field [
         "JsonValue.String",generateParserMatch field "NodaTime.Text.InstantPattern.General.Parse(x)" "NodaParseSuccess result"

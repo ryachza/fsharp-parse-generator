@@ -165,7 +165,7 @@ let generateParser (field:FieldDefinition) : string =
         name.extract
     | FKOption FKString ->
       sprintf
-        @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> None | JsonValue.String(x) -> Ok (Some x)) | _ -> Error [name,""type""]"
+        @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> Ok None | JsonValue.String(x) -> Ok (Some x) | _ -> Error [name,""type""])"
     | FKOption kind ->
       sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name=emptyFieldName;kind=kind })
     | FKInstant ->

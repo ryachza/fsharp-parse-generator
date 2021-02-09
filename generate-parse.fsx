@@ -140,6 +140,45 @@ module Parse =
   let parseFile (input:Input) : P.ParserResult<ModuleDefinition,State> =
     P.runParserOnStream parseModule Map.empty input.name input.stream input.encoding
 
+let rec generateKind (name:FieldName) : FieldKind -> string = function
+  | FKDate -> "NodaTime.LocalDate"
+  | FKTime -> "NodaTime.LocalTime"
+  | FKDateTime -> "NodaTime.LocalDateTime"
+  | FKInstant -> "NodaTime.Instant"
+  | FKGuid -> "System.Guid"
+  | FKInt -> "int"
+  | FKFloat -> "decimal"
+  | FKBool -> "bool"
+  | FKString -> "string"
+  | FKRecord x -> x.name.extract
+  | FKArray x -> sprintf "%s array" (generateKind name x)
+  | FKOption x -> sprintf "%s option" (generateKind name x)
+  | FKValid x -> generateKind name x
+  | FKDynamic -> sprintf "'%s" name.extract
+
+let rec extractValidateFields (rd:RecordDefinition) : string option =
+  rd.fields
+  |> Array.choose (function
+    | { name=x;kind=FKValid y }
+    | { name=x;kind=FKOption (FKValid y) }
+    | { name=x;kind=FKArray (FKValid y) } ->
+      Some (sprintf "%s:ValidateParser<%s>" x.extract (generateKind x y))
+    | { name=x;kind=FKRecord rd }
+    | { name=x;kind=FKOption (FKRecord rd) }
+    | { name=x;kind=FKArray (FKRecord rd) } ->
+      match extractValidateFields rd with
+      | None -> None
+      | Some t -> Some (sprintf "%s:%s" x.extract t)
+    | _ -> None
+  )
+  |> function
+    | [||] -> None
+    | xs -> xs |> String.concat ";" |> sprintf "{| %s |}" |> Some
+let generateValidatesParameter (rd:RecordDefinition) : {| name:string;kind:string |} option =
+  match extractValidateFields rd with
+  | None -> None
+  | Some x -> Some {| name="validates";kind=x |}
+
 let generateJsonMatch ({ name=name }:FieldDefinition) (matches:_) =
   sprintf
     @"(match x with | %s | _ -> Error [name,""type""])"
@@ -152,7 +191,7 @@ let generateParserMatch ({ name=name }:FieldDefinition) (parse:string) (check:st
     check
 
 let generateParser (field:FieldDefinition) : string =
-  let rec inner ({ name=name;kind=kind } as field) =
+  let rec inner ({ name=name;kind=kind } as field) (fieldname:FieldName) =
     match kind with
     | FKDynamic ->
       sprintf
@@ -161,13 +200,13 @@ let generateParser (field:FieldDefinition) : string =
     | FKValid x ->
       sprintf
         @"(match %s with | Ok x -> (match validates.%s x with | Ok x -> Ok x | Error _ -> Error [name,""valid""]) | Error x -> Error x)"
-        (inner { field with name=emptyFieldName;kind=x })
+        (inner { field with name=emptyFieldName;kind=x } fieldname)
         name.extract
     | FKOption FKString ->
       sprintf
         @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> Ok None | JsonValue.String(x) -> Ok (Some x) | _ -> Error [name,""type""])"
     | FKOption kind ->
-      sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name=emptyFieldName;kind=kind })
+      sprintf @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)" (inner { field with name=emptyFieldName;kind=kind } fieldname)
     | FKInstant ->
       generateJsonMatch field [
         "JsonValue.String",generateParserMatch field "NodaTime.Text.InstantPattern.General.Parse(x)" "NodaParseSuccess result"
@@ -214,16 +253,17 @@ let generateParser (field:FieldDefinition) : string =
     | FKArray kind ->
       sprintf
         @"(match x with | JsonValue.Array(values) -> Result.map List.toArray <| Seq.foldBack (fun x agg -> match x,agg with | Ok x,Ok xs -> Ok (x::xs) | Error es1,Error es2 -> Error (es1@es2) | Error es,Ok _ -> Error es | Ok _,Error es -> Error es) (Array.mapi (fun i x -> let name = sprintf ""%%s[%%d]"" name i in %s) values) (Ok []) | _ -> Error [name,""type""])"
-        (inner { field with name=emptyFieldName;kind=kind })
+        (inner { field with name=emptyFieldName;kind=kind } fieldname)
     | FKRecord record ->
       sprintf
-        @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s.parseJson (Map.ofArray properties)) | _ -> Error [name,""type""])"
+        @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s.parseJson (Map.ofArray properties%s)) | _ -> Error [name,""type""])"
         record.name.extract
+        (match extractValidateFields record with | None -> "" | Some _ -> sprintf ",validates.%s" fieldname.extract)
   sprintf
     @"(let name = ""%s"" in match map.TryFind(""%s"") with | Some x -> %s | None -> Error [name,""missing""])"
     field.name.extract
     field.name.extract
-    (inner field)
+    (inner field field.name)
 let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
   let parse =
     fields
@@ -254,21 +294,6 @@ let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
     construct
     failure
     error
-let rec generateKind (name:FieldName) : FieldKind -> string = function
-  | FKDate -> "NodaTime.LocalDate"
-  | FKTime -> "NodaTime.LocalTime"
-  | FKDateTime -> "NodaTime.LocalDateTime"
-  | FKInstant -> "NodaTime.Instant"
-  | FKGuid -> "System.Guid"
-  | FKInt -> "int"
-  | FKFloat -> "decimal"
-  | FKBool -> "bool"
-  | FKString -> "string"
-  | FKRecord x -> x.name.extract
-  | FKArray x -> sprintf "%s array" (generateKind name x)
-  | FKOption x -> sprintf "%s option" (generateKind name x)
-  | FKValid x -> generateKind name x
-  | FKDynamic -> sprintf "'%s" name.extract
 let generateDynamicsTypeParameters (rd:RecordDefinition) : string option =
   match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
   | [||] -> None
@@ -277,10 +302,6 @@ let generateDynamicsParameter (rd:RecordDefinition) : {| name:string;kind:string
   match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
   | [||] -> None
   | xs   -> Some {| name="dynamics";kind=sprintf "{| %s |}" (xs |> Array.map (fun (FieldName x) -> sprintf "%s:DynamicParser<'%s>" x x) |> String.concat ";") |}
-let generateValidatesParameter (rd:RecordDefinition) : {| name:string;kind:string |} option =
-  match rd.fields |> Array.choose (function | { name=x;kind=FKValid y } -> Some (x,y) | _ -> None) with
-  | [||] -> None
-  | xs   -> Some {| name="validates";kind=sprintf "{| %s |}" (xs |> Array.map (fun (x,y) -> sprintf "%s:ValidateParser<%s>" x.extract (generateKind x y)) |> String.concat ";") |}
 let additionalParameters (rd:RecordDefinition) : {| name:string;kind:string |} array =
   Array.choose id [|generateDynamicsParameter rd;generateValidatesParameter rd|]
 let parameterToString (p:{| name:string;kind:string |}) : string =

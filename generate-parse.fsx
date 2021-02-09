@@ -90,7 +90,7 @@ module Parse =
       stringReturn "int" FKInt
       stringReturn "float" FKFloat
       stringReturn "bool" FKBool
-      
+
       stringReturn "string" FKString
 
       stringReturn "dynamic" FKDynamic
@@ -285,6 +285,14 @@ let additionalParameters (rd:RecordDefinition) : {| name:string;kind:string |} a
   Array.choose id [|generateDynamicsParameter rd;generateValidatesParameter rd|]
 let parameterToString (p:{| name:string;kind:string |}) : string =
   sprintf "(%s:%s)" p.name p.kind
+let generateTypeDynamics (rd:RecordDefinition) =
+  match generateDynamicsParameter rd with
+  | None -> ""
+  | Some x -> sprintf "type %s_Dynamic%s = %s" rd.name.extract (Option.defaultValue "" (generateDynamicsTypeParameters rd)) x.kind
+let generateTypeValidates (rd:RecordDefinition) =
+  match generateValidatesParameter rd with
+  | None -> ""
+  | Some x -> sprintf "type %s_Validate = %s" rd.name.extract x.kind
 let generateTypeName (rd:RecordDefinition) : string =
   sprintf "%s%s" (rd.name.extract) (Option.defaultValue "" (generateDynamicsTypeParameters rd))
 let generateField : FieldDefinition -> string = function
@@ -293,55 +301,67 @@ let generateField : FieldDefinition -> string = function
 let generateRecord : RecordDefinition -> string = function
   | { name=name;fields=fields } as x ->
     let parameters = additionalParameters x
+    let parametersSignature =
+      match parameters with
+      | [||] -> ""
+      | xs   -> sprintf ",%s" (parameters |> Array.map parameterToString |> String.concat ",")
+    let parametersCall =
+      match parameters with
+      | [||] -> ""
+      | xs   -> sprintf ",%s" (parameters |> Array.map (fun x -> x.name) |> String.concat ",")
     sprintf @"
+%s
+%s
 type %s = {
   %s
 } with
   // TODO: handler structure errors and parse errors separately
-  static member parseJson (map:Map<string,JsonValue>) %s : Result<%s,(string*string) list> =
+  static member parseJson (map:Map<string,JsonValue>%s) : Result<%s,(string*string) list> =
     %s
-  static member parseJsonRaw (x:string) %s : Result<%s,(string * string) list> =
+  static member parseJsonRaw (x:string%s) : Result<%s,(string * string) list> =
     match JsonValue.TryParse(x) with
     | Some (JsonValue.Record(properties)) ->
-      %s.parseJson (Map.ofArray properties) %s
+      %s.parseJson (Map.ofArray properties%s)
     | Some _ -> Error [""_"",""type""]
     | None -> Error [""_"",""parse""]
-  static member parseJsonArray (x:JsonValue array) %s : Result<%s array,((string*string) list) array> =
+  static member parseJsonArray (x:JsonValue array%s) : Result<%s array,((string*string) list) array> =
     // TODO: loop through calling `parseJson` on each, collecting all success or set of failures
     failwith ""parseJsonArray: not implemented""
-  static member parseJsonRawArray (x:string) %s : Result<%s array,((string * string) list) array> =
+  static member parseJsonRawArray (x:string%s) : Result<%s array,((string * string) list) array> =
     match JsonValue.TryParse(x) with
     | Some (JsonValue.Array(values)) ->
-      %s.parseJsonArray values %s
+      %s.parseJsonArray (values%s)
     | Some _ -> Error [|[""_"",""type""]|]
     | None -> Error [|[""_"",""parse""]|]
 "
       // type definition:
+      (generateTypeDynamics x)
+      (generateTypeValidates x)
       (generateTypeName x)
       (fields |> Array.map generateField |> String.concat "\n  ")
 
       // parseJson definition:
-      (parameters |> Array.map parameterToString |> String.concat " ")
+      parametersSignature
       (generateTypeName x)
       (generateParseJson x)
 
       // parseJsonRaw definition:
-      (parameters |> Array.map parameterToString |> String.concat " ")
+      parametersSignature
       (generateTypeName x)
       name.extract
-      (parameters |> Array.map (fun x -> x.name) |> String.concat " ")
+      parametersCall
 
       // parseJsonArray definition:
-      (parameters |> Array.map parameterToString |> String.concat " ")
+      parametersSignature
       (generateTypeName x)
       // name.extract
-      // (String.concat " " (Array.map (fun x -> x.name) parameters))
+      // parametersCall
 
       // parseJsonRawArray definition:
-      (parameters |> Array.map parameterToString |> String.concat " ")
+      parametersSignature
       (generateTypeName x)
       name.extract
-      (parameters |> Array.map (fun x -> x.name) |> String.concat " ")
+      parametersCall
 
 let target = "out/parsers.fs"
 let generated () =

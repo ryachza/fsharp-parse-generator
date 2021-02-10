@@ -159,6 +159,12 @@ let rec generateKind (name:FieldName) : FieldKind -> string = function
 let rec extractValidateFields (rd:RecordDefinition) : string option =
   rd.fields
   |> Array.choose (function
+    | { name=x;kind=FKValid ((FKRecord z) as y) }
+    | { name=x;kind=FKValid ((FKOption (FKRecord z)) as y) }
+    | { name=x;kind=FKValid ((FKArray (FKRecord z)) as y) } ->
+      match extractValidateFields z with
+      | None -> Some (sprintf "%s:ValidateParser<%s>" x.extract (generateKind x y))
+      | Some t -> Some (sprintf "%s:ValidateParser<%s>;%s':%s" x.extract (generateKind x y) x.extract t)
     | { name=x;kind=FKValid y }
     | { name=x;kind=FKOption (FKValid y) }
     | { name=x;kind=FKArray (FKValid y) } ->
@@ -168,7 +174,7 @@ let rec extractValidateFields (rd:RecordDefinition) : string option =
     | { name=x;kind=FKArray (FKRecord rd) } ->
       match extractValidateFields rd with
       | None -> None
-      | Some t -> Some (sprintf "%s:%s" x.extract t)
+      | Some t -> Some (sprintf "%s':%s" x.extract t)
     | _ -> None
   )
   |> function
@@ -258,7 +264,7 @@ let generateParser (field:FieldDefinition) : string =
       sprintf
         @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s.parseJson (Map.ofArray properties%s)) | _ -> Error [name,""type""])"
         record.name.extract
-        (match extractValidateFields record with | None -> "" | Some _ -> sprintf ",validates.%s" fieldname.extract)
+        (match extractValidateFields record with | None -> "" | Some _ -> sprintf ",validates.%s'" fieldname.extract)
   sprintf
     @"(let name = ""%s"" in match map.TryFind(""%s"") with | Some x -> %s | None -> Error [name,""missing""])"
     field.name.extract

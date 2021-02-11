@@ -201,7 +201,7 @@ let generateParser (field:FieldDefinition) : string =
     match kind with
     | FKDynamic ->
       sprintf
-        @"(match dynamics.%s x with | Ok x -> Ok x | Error _ -> Error [name,""dynamic""])"
+        @"(match dynamics.%s x with | Ok x -> Ok x | Error es -> Error es)"
         name.extract
     | FKValid x ->
       sprintf
@@ -397,7 +397,7 @@ let generated () =
   seq {
     yield "module App.GeneratedParsers"
     yield "open FSharp.Data"
-    yield "type DynamicParser<'a> = JsonValue -> Result<'a,string> // Map<string,JsonValue> -> Result<'a,string>"
+    yield "type DynamicParser<'a> = JsonValue -> Result<'a,(string*string) list> // Map<string,JsonValue> -> Result<'a,string>"
     yield "type ValidateParser<'a> = 'a -> Result<'a,string>"
     yield "let private (|NodaParseSuccess|NodaParseFailure|) (x:NodaTime.Text.ParseResult<'a>) = match x.TryGetValue(Unchecked.defaultof<'a>) with | true,x -> NodaParseSuccess x | false,_ -> NodaParseFailure"
     for file in valfiles do

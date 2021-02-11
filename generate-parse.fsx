@@ -32,6 +32,8 @@ type FieldKind
 
   | FKDynamic
   | FKValid of FieldKind
+
+  | FKLiteral of string
   and FieldDefinition = {
     name:FieldName
     kind:FieldKind
@@ -40,9 +42,10 @@ type FieldKind
     name:RecordName
     fields:FieldDefinition array
   }
+  and ModuleBlock = ModuleBlockRecord of RecordDefinition | ModuleBlockRaw of string
   and ModuleDefinition = {
     // name:string
-    records:RecordDefinition array
+    blocks:ModuleBlock array
   }
 
 module Parse =
@@ -96,6 +99,7 @@ module Parse =
       stringReturn "dynamic" FKDynamic
 
       pchar '%' >>. parseRecordName >>= lookupRecord |>> FKRecord
+      pchar '!' >>. parseIdentifier |>> FKLiteral
     ]
     do! ws
     let! (wrappers:(FieldKind -> FieldKind) list) =
@@ -132,9 +136,16 @@ module Parse =
     return record
   }
 
+  let private parseRaw = parse {
+    do! parseLine (pstring "!raw") |>> ignore<string>
+    let! raw = charsTillString "!endraw" false System.Int32.MaxValue
+    do! parseLine (pstring "!endraw") |>> ignore<string>
+    return raw
+  }
+
   let private parseModule = parse {
-    let! records = many1 parseRecord
-    return { records=List.toArray records }
+    let! blocks = many1 ((parseRaw |>> ModuleBlockRaw) <|> (parseRecord |>> ModuleBlockRecord))
+    return { blocks=List.toArray blocks }
   }
 
   let parseFile (input:Input) : P.ParserResult<ModuleDefinition,State> =
@@ -162,6 +173,7 @@ let rec generateKind (name:FieldName) : FieldKind -> string = function
   | FKOption x -> sprintf "%s option" (generateKind name x)
   | FKValid x -> generateKind name x
   | FKDynamic -> sprintf "'%s" name.extract
+  | FKLiteral x -> x
 
 let rec extractValidateFields (rd:RecordDefinition) : string option =
   rd.fields
@@ -272,6 +284,10 @@ let generateParser (field:FieldDefinition) : string =
         @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s.parseJson (Map.ofArray properties%s)) | _ -> Error [name,""type""])"
         record.name.extract
         (match extractValidateFields record with | None -> "" | Some _ -> sprintf ",validates.%s'" fieldname.extract)
+    | FKLiteral literal ->
+      sprintf
+        @"(%s.parseJson x)"
+        literal
   sprintf
     @"(let name = ""%s"" in match map.TryFind(""%s"") with | Some x -> %s | None -> Error [name,""missing""])"
     field.name.extract
@@ -404,8 +420,8 @@ let generated () =
     for file in valfiles do
       printfn "%A" file
       match Parse.parseFile { name=file;stream=File.OpenRead(file);encoding=System.Text.Encoding.UTF8 } with
-      | FParsec.CharParsers.Success ({ records=records },_,_) ->
-        for record in records -> generateRecord record
+      | FParsec.CharParsers.Success ({ blocks=blocks },_,_) ->
+        for block in blocks -> match block with | ModuleBlockRecord record -> generateRecord record | ModuleBlockRaw raw -> raw
       | FParsec.CharParsers.Failure (result,_,_) ->
         failwith result
   }

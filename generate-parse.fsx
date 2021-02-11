@@ -140,6 +140,13 @@ module Parse =
   let parseFile (input:Input) : P.ParserResult<ModuleDefinition,State> =
     P.runParserOnStream parseModule Map.empty input.name input.stream input.encoding
 
+let generateDynamicsTypeParameters (rd:RecordDefinition) : string option =
+  match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
+  | [||] -> None
+  | xs   -> Some (sprintf "<%s>" (xs |> Array.map (fun (FieldName x) -> sprintf "'%s" x) |> String.concat ","))
+let generateTypeName (rd:RecordDefinition) : string =
+  sprintf "%s%s" (rd.name.extract) (Option.defaultValue "" (generateDynamicsTypeParameters rd))
+
 let rec generateKind (name:FieldName) : FieldKind -> string = function
   | FKDate -> "NodaTime.LocalDate"
   | FKTime -> "NodaTime.LocalTime"
@@ -150,7 +157,7 @@ let rec generateKind (name:FieldName) : FieldKind -> string = function
   | FKFloat -> "decimal"
   | FKBool -> "bool"
   | FKString -> "string"
-  | FKRecord x -> x.name.extract
+  | FKRecord x -> generateTypeName x
   | FKArray x -> sprintf "%s array" (generateKind name x)
   | FKOption x -> sprintf "%s option" (generateKind name x)
   | FKValid x -> generateKind name x
@@ -300,10 +307,6 @@ let generateParseJson ({ name=name;fields=fields }:RecordDefinition) : string =
     construct
     failure
     error
-let generateDynamicsTypeParameters (rd:RecordDefinition) : string option =
-  match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
-  | [||] -> None
-  | xs   -> Some (sprintf "<%s>" (xs |> Array.map (fun (FieldName x) -> sprintf "'%s" x) |> String.concat ","))
 let generateDynamicsParameter (rd:RecordDefinition) : {| name:string;kind:string |} option =
   match rd.fields |> Array.choose (function | { name=x;kind=FKDynamic } -> Some x | _ -> None) with
   | [||] -> None
@@ -320,8 +323,6 @@ let generateTypeValidates (rd:RecordDefinition) =
   match generateValidatesParameter rd with
   | None -> ""
   | Some x -> sprintf "type %s_Validate = %s" rd.name.extract x.kind
-let generateTypeName (rd:RecordDefinition) : string =
-  sprintf "%s%s" (rd.name.extract) (Option.defaultValue "" (generateDynamicsTypeParameters rd))
 let generateField : FieldDefinition -> string = function
   | { name=name;kind=kind } ->
     sprintf "%s:%s" name.extract (generateKind name kind)

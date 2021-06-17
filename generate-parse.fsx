@@ -37,6 +37,7 @@ type FieldKind
   and FieldDefinition = {
     name:FieldName
     kind:FieldKind
+    source:RecordName option
   }
   and RecordDefinition = {
     name:RecordName
@@ -115,7 +116,7 @@ module Parse =
     do! skipString "..."
     let! target = parseRecordName
     let! record = lookupRecord target
-    return record.fields
+    return record.fields |> Array.map (fun x -> { x with source=Some target })
   }
 
   let private parseField = parseLine <| parse {
@@ -124,7 +125,7 @@ module Parse =
     do! pchar ':' |>> ignore
     do! ws
     let! kind = parseFieldKind
-    return [|{ name=name;kind=kind }|]
+    return [|{ name=name;kind=kind;source=None }|]
   }
 
   let private parseRecord = parse {
@@ -343,6 +344,61 @@ let generateTypeValidates (rd:RecordDefinition) =
 let generateField : FieldDefinition -> string = function
   | { name=name;kind=kind } ->
     sprintf "%s:%s" name.extract (generateKind name kind)
+let generateFromSegments : RecordDefinition -> string = function
+  | { name=name;fields=fields } ->
+    let segments,fields =
+      Array.foldBack (fun ({ source=source } as z) (xs,ys) ->
+        match source with
+        | Some x ->
+          ((x,z)::xs,ys)
+        | None ->
+          (xs,z::ys)
+      ) fields ([],[])
+    match segments with
+    | [] -> ""
+    | segments ->
+      let grouped =
+        segments
+        |> List.groupBy fst
+      let parametersS =
+        grouped
+        |> List.mapi (fun i (name,_) ->
+          sprintf "(r_%d:%s)" i name.extract
+        )
+        |> String.concat " "
+      let parameterF =
+        match fields with
+        | [] -> ""
+        | fields ->
+          sprintf "(fs:{| %s |})"
+            (
+              fields
+              |> List.map generateField
+              |> String.concat ";"
+            )
+      let assignments =
+        (
+          (
+            grouped
+            |> List.mapi (fun i (_,x) ->
+              x |> List.map (fun (_,{ name=name }) -> sprintf "%s=r_%d.%s" name.extract i name.extract)
+            )
+            |> List.collect id
+          )
+          @
+          (fields |> List.map (fun { name=name } -> sprintf "%s=fs.%s" name.extract name.extract))
+        )
+        |> String.concat ";"
+      sprintf @"
+  static member fromSegments %s %s : %s =
+    {
+      %s
+    }
+"
+        parametersS
+        parameterF
+        name.extract
+        assignments
 let generateRecord : RecordDefinition -> string = function
   | { name=name;fields=fields } as x ->
     let parameters = additionalParameters x
@@ -378,6 +434,7 @@ type %s = {
       %s.parseJsonArray (values%s)
     | Some _ -> Error [|[""_"",""type""]|]
     | None -> Error [|[""_"",""parse""]|]
+  %s
 "
       // type definition:
       (generateTypeDynamics x)
@@ -407,6 +464,8 @@ type %s = {
       (generateTypeName x)
       name.extract
       parametersCall
+
+      (generateFromSegments x)
 
 let target = "out/parsers.fs"
 let generated () =

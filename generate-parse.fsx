@@ -224,9 +224,10 @@ let generateParser (field:FieldDefinition) : string =
         name.extract
     | FKValid x ->
       sprintf
-        @"(match %s with | Ok x -> (match validates.%s x with | Ok x -> Ok x | Error _ -> Error [name,""valid""]) | Error x -> Error x)"
+        @"(match %s with | Ok x -> (match validates.%s x with | Ok x -> Ok x | Error x -> Error [name,%s]) | Error x -> Error x)"
         (inner { field with name=emptyFieldName;kind=x } fieldname)
         name.extract
+        @"(sprintf ""%s"" x)"
     | FKOption FKString ->
       sprintf
         @"(match x with | JsonValue.Null -> Ok None | JsonValue.String("""") -> Ok None | JsonValue.String(x) -> Ok (Some x) | _ -> Error [name,""type""])"

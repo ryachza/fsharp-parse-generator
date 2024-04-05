@@ -22,7 +22,7 @@ type FieldKind
   | FKGuid
   // TODO: unsigned int
   | FKInt
-  | FKFloat
+  | FKDecimal
   | FKBool
   // | FKString of StringFlag array
   | FKString
@@ -92,14 +92,14 @@ module Parse =
 
       stringReturn "guid" FKGuid
       stringReturn "int" FKInt
-      stringReturn "float" FKFloat
+      stringReturn "decimal" FKDecimal
       stringReturn "bool" FKBool
 
       stringReturn "string" FKString
 
       stringReturn "dynamic" FKDynamic
 
-      pchar '%' >>. parseRecordName >>= lookupRecord |>> FKRecord
+      pchar '@' >>. parseRecordName >>= lookupRecord |>> FKRecord
       pchar '!' >>. parseIdentifier |>> FKLiteral
     ]
     do! ws
@@ -139,8 +139,7 @@ module Parse =
 
   let private parseRaw = parse {
     do! parseLine (pstring "!raw") |>> ignore<string>
-    let! raw = charsTillString "!endraw" false System.Int32.MaxValue
-    do! parseLine (pstring "!endraw") |>> ignore<string>
+    let! raw = charsTillString "!endraw" true System.Int32.MaxValue
     return raw
   }
 
@@ -166,7 +165,7 @@ let rec generateKind (name:FieldName) : FieldKind -> string = function
   | FKInstant -> "NodaTime.Instant"
   | FKGuid -> "System.Guid"
   | FKInt -> "int"
-  | FKFloat -> "decimal"
+  | FKDecimal -> "decimal"
   | FKBool -> "bool"
   | FKString -> "string"
   | FKRecord x -> generateTypeName x
@@ -267,7 +266,7 @@ let generateParser (field:FieldDefinition) : string =
           "System.Int32.TryParse(x)"
           "true,result"
         )
-    | FKFloat ->
+    | FKDecimal ->
       sprintf
         @"(match x with | JsonValue.Float(x) -> Ok (decimal x) | JsonValue.Number(x) -> Ok x | JsonValue.String(x) -> %s | _ -> Error [name,""type""])"
         (generateParserMatch field

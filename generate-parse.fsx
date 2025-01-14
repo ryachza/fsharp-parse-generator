@@ -468,8 +468,9 @@ type %s = {
 
 let target = "out/parsers.fs"
 let generated () =
-  let valfiles =
-    Directory.GetFiles("src","*.val",SearchOption.AllDirectories)
+  printfn "%A" fsi.CommandLineArgs
+  let valfiles = fsi.CommandLineArgs |> Array.skip 1 |> Array.collect (fun x -> x.Split(';') |> Array.filter (fun x -> not (System.String.IsNullOrWhiteSpace(x))))
+  printfn "%A" valfiles
   seq {
     yield "module App.GeneratedParsers"
     yield "open FSharp.Data"
@@ -489,7 +490,6 @@ try
   for line in generated () do
     ignore<System.Text.StringBuilder> <| sb.AppendLine(line)
   let result = sb.ToString()
-  ignore<DirectoryInfo> (Directory.CreateDirectory(Path.GetDirectoryName(target)))
   using (File.CreateText(target)) <| fun writer -> writer.Write(result)
 with
 | e ->

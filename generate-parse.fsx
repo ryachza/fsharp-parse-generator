@@ -332,18 +332,18 @@ let generateParser (e:bool) (dvs:bool) (field:FieldDefinition) : string =
     | FKValid x ->
       sprintf
         @"(match %s with | Ok x -> (match validates.%s __ x with | Ok x -> Ok x | Error x -> Error [name,%s]) | Error x -> Error x)"
-        (inner inArray { field with name=name;kind=x } (Some name))
+        (inner inArray { field with name=name;kind=x } None)
         name.extract
         @"(sprintf ""%s"" x)"
     | FKOption kind ->
       sprintf
         @"(match x with | JsonValue.Null -> Ok None | x -> Result.map Some %s)"
-        (inner inArray { field with name=name;kind=kind } (Some name))
+        (inner inArray { field with name=name;kind=kind } None)
     | FKArray kind ->
       sprintf
         @"(match x with | JsonValue.Array(values) -> Result.map List.toArray <| Seq.foldBack (fun x agg -> match x,agg with | Ok x,Ok xs -> Ok (x::xs) | Error es1,Error es2 -> Error (es1@es2) | Error es,Ok _ -> Error es | Ok _,Error es -> Error es) (Array.mapi (fun i x -> let name = sprintf ""%%s[%%d]"" name i in %s) values) (Ok []) | _ -> Error [name,""type""])"
         (inner true { field with name=name;kind=kind } (Some name))
-    | FKRecord record ->
+    | FKRecord record as record_ ->
       sprintf
         @"(match x with | JsonValue.Record(properties) -> Result.mapError (List.map (fun (f,m) -> sprintf ""%%s.%%s"" name f,m)) (%s._parseJson%s (%s)) | _ -> Error [name,""type""])"
         record.name.extract
@@ -351,14 +351,10 @@ let generateParser (e:bool) (dvs:bool) (field:FieldDefinition) : string =
         ([
           Some "Map.ofArray properties"
           match e || inArray with | true -> Some "i" | false -> None
-          match hasDynamics (FKRecord record) || hasValidates (FKRecord record) with | false -> None | true -> Some "__"
-          match hasDynamics (FKRecord record) with | false -> None | true -> Some (fieldname |> Option.map (fun x -> sprintf "dynamics.%s" x.extract) |> Option.defaultValue "dynamics")
-          match hasValidates (FKRecord record) with | false -> None | true -> Some (sprintf "validates.%s" name.extract)
+          match hasDynamics record_ || hasValidates record_ with | false -> None | true -> Some "__"
+          match hasDynamics record_ with | false -> None | true -> Some (fieldname |> Option.map (fun x -> sprintf "dynamics.%s" x.extract) |> Option.defaultValue "dynamics")
+          match hasValidates record_ with | false -> None | true -> Some (sprintf "validates.%s" name.extract)
         ] |> List.choose id |> String.concat ",")
-        // (match dvs with | false -> record.name.extract | true -> "_"+record.name.extract)
-        // (match dvs with | false -> "" | true -> ",__")
-        // (match dvs with | false -> "" | true -> sprintf ",dynamics.%s" fieldname.extract)
-        // (match dvs with | false -> "" | true -> sprintf ",validates.%s" fieldname.extract)
     | FKLiteral literal ->
       sprintf
         @"(%s.parseJson x)"
@@ -548,11 +544,13 @@ type %s = %s with
     %s
   static member parseJson (map:Map<string,JsonValue>%s) : Result<%s,(string*string) list> =
     %s
+  static member parseJson_ (x:JsonValue%s) : Result<%s,(string*string) list> =
+    match x with
+    | JsonValue.Record(properties) -> %s.parseJson (Map.ofArray properties%s)
+    | _ -> Error [""_"",""type""]
   static member parseJsonRaw (x:string%s) : Result<%s,(string * string) list> =
     match JsonValue.TryParse(x) with
-    | Some (JsonValue.Record(properties)) ->
-      %s.parseJson (Map.ofArray properties%s)
-    | Some _ -> Error [""_"",""type""]
+    | Some x -> %s.parseJson_ (x%s)
     | None -> Error [""_"",""parse""]
   %s
 "
@@ -598,6 +596,12 @@ type %s = %s with
       parametersSignature
       (generateTypeName x)
       (generateParseJson false dvs x)
+
+      // parseJson_ definition:
+      parametersSignature
+      (generateTypeName x)
+      x.name.extract
+      parametersCall
 
       // parseJsonRaw definition:
       parametersSignature

@@ -20,7 +20,7 @@
     <Exec Command="dotnet fsi generate-parse.fsx @(Src,';') > out/generate-parse.out.txt" />
   </Target>
   <ItemGroup>
-    <Compile Include="out/*.fs" />
+    <Compile Include="out/parsers.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FParsec" />

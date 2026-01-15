@@ -17,7 +17,7 @@
     Outputs="out/parsers.fs"
   >
     <MakeDir Directories="out" />
-    <Exec Command="dotnet fsi generate-parse.fsx @(Src,';') > out/generate-parse.out.txt" />
+    <Exec Command="dotnet fsi generate-parse.fsx &quot;@(Src,';')&quot; > out/generate-parse.out.txt" />
   </Target>
   <ItemGroup>
     <Compile Include="out/parsers.fs" />
